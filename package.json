@@ -99,6 +99,7 @@
     ]
   },
   "jest": {
+    "setupFilesAfterEnv": ["./test/setup.js"],
     "coverageDirectory": "./coverage/",
     "collectCoverage": true,
     "testURL": "http://localhost"

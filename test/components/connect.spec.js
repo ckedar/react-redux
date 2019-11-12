@@ -2540,12 +2540,12 @@ describe('React', () => {
         // 1) Initial render
         // 2) Post-mount check
         // 3) After "wasted" re-render
-        expect(mapStateSpy).toHaveBeenCalledTimes(2)
-        expect(mapDispatchSpy).toHaveBeenCalledTimes(2)
+        expect(mapStateSpy).toHaveBeenCalledWithinRange(1, 2)
+        expect(mapDispatchSpy).toHaveBeenCalledWithinRange(1, 2)
 
         // 1) Initial render
         // 2) Triggered by post-mount check with impure results
-        expect(impureRenderSpy).toHaveBeenCalledTimes(2)
+        expect(impureRenderSpy).toHaveBeenCalledWithinRange(1, 2)
         expect(tester.getByTestId('statefulValue')).toHaveTextContent('foo')
 
         // Impure update
@@ -2553,11 +2553,11 @@ describe('React', () => {
         externalSetState({ storeGetter })
 
         // 4) After the the impure update
-        expect(mapStateSpy).toHaveBeenCalledTimes(3)
-        expect(mapDispatchSpy).toHaveBeenCalledTimes(3)
+        expect(mapStateSpy).toHaveBeenCalledWithinRange(2, 3)
+        expect(mapDispatchSpy).toHaveBeenCalledWithinRange(2, 3)
 
         // 3) Triggered by impure update
-        expect(impureRenderSpy).toHaveBeenCalledTimes(3)
+        expect(impureRenderSpy).toHaveBeenCalledWithinRange(2, 3)
         expect(tester.getByTestId('statefulValue')).toHaveTextContent('bar')
       })
 
@@ -3304,4 +3304,199 @@ describe('React', () => {
       expect(thrownError).toBe(null)
     })
   })
+
+  describe("New tests", () => {
+    it('component should always be rendered with latest state', () => {
+      function counter(state = 0, action) {
+        return action.type === 'INCR' ? state + 1 : state
+      }
+      const store = createStore(counter)
+
+      // eslint-disable-next-line react/prop-types
+      function child({ state, dispatch }) {
+        // console.log("state, store.getState() = ", state, store.getState());
+        expect(state).toBe(store.getState())
+
+        const [, setLocalState] = React.useState(0)
+        const incrHandler = () => {
+          setLocalState(localState => localState + 1)
+          dispatch({ type: 'INCR' })
+        }
+        return (
+          <div>
+            Child = {state}
+            <button onClick={incrHandler}>Incr</button>
+          </div>
+        )
+      }
+      const Child = connect(state => ({ state }))(child)
+      // console.log("Child = ", Child);
+
+      // eslint-disable-next-line react/prop-types
+      function container({ state }) {
+        // console.log("Container", state);
+        return (
+          <div>
+            Container = {state}
+            <Child />
+          </div>
+        )
+      }
+      const Container = connect(state => ({ state }))(container)
+
+      const tester = rtl.render(
+        <ProviderMock store={store}>
+          <Container />
+        </ProviderMock>
+      )
+
+      rtl.fireEvent.click(tester.getByText(/incr/i))
+    })
+
+    it('Error thrown from mapPropsToState should be swallowed if component is unmounting', () => {
+      const reducers = (state = { removed: false, actionCount: 0 }, action) => {
+        console.log("action = ", action);
+        if (action.type === "remove") {
+          return {
+            removed: true
+          };
+        }
+        return { ...state, actionCount: state.actionCount + 1 };
+      };
+
+      const store = createStore(reducers);
+
+      const onClick = () => {
+        store.dispatch({
+          type: "update"
+        });
+      };
+
+      class AppImpl extends React.PureComponent {
+        componentDidUpdate() {
+          const { removed } = this.props;
+          if (!removed) {
+            store.dispatch({
+              type: "remove"
+            });
+          }
+        }
+        render() {
+          const { removed } = this.props;
+
+          return (
+            <div>
+              {!removed && <Item />}
+              <button onClick={onClick}>Click Me</button>
+            </div>
+          );
+        }
+      }
+
+      const App = connect(state => {
+        return state;
+      })(AppImpl);
+
+      class ItemImpl extends React.PureComponent {
+        render() {
+          return <p>{"Item"}</p>;
+        }
+      }
+
+      const Item = connect(state => {
+        expect(state.removed).toBeFalsy()
+        // invariant(state.removed === false, "Called connect on removed component");
+        return state;
+      })(ItemImpl);
+
+      const Main = () => (
+        <div>
+          <ProviderMock store={store}>
+            <App />
+          </ProviderMock>
+        </div>
+      );
+
+      const tester = rtl.render(<Main/>)
+      rtl.fireEvent.click(tester.getByText(/Click Me/i))
+    })
+    it("Should not do wasteful render on store update triggered from uLE", () => {
+      const store = createStore(() => 'static state')
+
+      let renderCount = 0
+      const Child = ({foo, isActive, fetch}) => {
+        React.useLayoutEffect(() => {
+          if (isActive) fetch()
+        }, [isActive, fetch])
+
+        console.log('RENDER', {foo, isActive})
+        renderCount++
+        return foo
+      }
+
+      const ConnectedChild = connect(
+        () => ({foo: 'static value'}),
+        {
+          fetch: () => ({type: 'FETCH'})
+        }
+      )(Child)
+
+      const Parent = () => {
+        const [isActive, activate] = React.useReducer(() => true, false)
+
+        return (
+          <ProviderMock store={store}>
+            <ConnectedChild isActive={isActive} />
+            {isActive || (
+              <button type="button" onClick={activate}>
+                Activate
+              </button>
+            )}
+          </ProviderMock>
+        )
+      }
+      const tester = rtl.render(<Parent/>)
+      rtl.fireEvent.click(tester.getByText(/Activate/i))
+      expect(renderCount).toBe(2)
+    })
+    it('should update properly when a middle connected component does not update', () => {
+      @connect(state => ({ count: state }))
+      class A extends React.Component {
+        render() {
+          return <B />
+        }
+      }
+
+      @connect(state => ({ x: 1 }))
+      class B extends React.Component {
+        render() {
+          return <C />
+        }
+      }
+
+      @connect(state => ({ count: state }))
+      class C extends React.Component {
+        render() {
+          return <div data-testid="count">{this.props.count}</div>
+        }
+      }
+
+      const store = createStore((state = 0, action) =>
+        action.type === 'INC' ? (state += 1) : state
+      )
+      const tester = rtl.render(
+        <ProviderMock store={store}>
+          <A />
+        </ProviderMock>
+      )
+      expect(tester.getByTestId('count')).toHaveTextContent(0)
+
+      rtl.act(() => {
+        store.dispatch({ type: 'INC' })
+      })
+      expect(tester.getByTestId('count')).toHaveTextContent(1)
+
+    })
+  })
+
 })
